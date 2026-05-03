@@ -87,6 +87,8 @@ function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
   const total=dim(y,m),sch={};
   const rotating=people.filter(p=>!ukList.includes(p.name));
   people.forEach(p=>{sch[p.name]={};});
+
+  // UK-only staff
   people.filter(p=>ukList.includes(p.name)).forEach(p=>{
     for(let d=1;d<=total;d++){
       const ds=fmt(y,m,d),lv=leaves.find(l=>l.person===p.name&&l.date===ds);
@@ -94,9 +96,12 @@ function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
       sch[p.name][d]=pv!==undefined?pv:isWknd(y,m,d)?"Week Off":holidays.includes(ds)?"Indian Holiday":lv?lv.type:"UK";
     }
   });
+
   buildWeeks(y,m).forEach((wDays,wIdx)=>{
     const sat=wDays.find(d=>dow(y,m,d)===6),sun=wDays.find(d=>dow(y,m,d)===0);
     const wknd=[sat,sun].filter(Boolean),wkdys=wDays.filter(d=>!wknd.includes(d));
+
+    // Lock leaves / holidays / pins
     const lk={};
     rotating.forEach(p=>{
       lk[p.name]={};
@@ -108,7 +113,10 @@ function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
         else if(lv){lk[p.name][d]=lv.type;sch[p.name][d]=lv.type;}
       });
     });
+
     const wg=weeklyGroups(rotating,wIdx);
+
+    // ── Weekend coverage ──────────────────────────────────────────────────
     const wkndAsgn={};
     wknd.forEach(d=>{
       const coveredShifts=new Set();
@@ -126,6 +134,8 @@ function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
         if(cands.length){const pick=cands[(wIdx+variation)%cands.length];if(!wkndAsgn[pick])wkndAsgn[pick]={};wkndAsgn[pick][d]=cov;taken.add(pick);}
       });
     });
+
+    // ── Assign weekday shifts per person ─────────────────────────────────
     rotating.forEach(p=>{
       const pi=rotating.findIndex(r=>r.name===p.name),myLk=lk[p.name];
       const freeDays=wDays.length-Object.keys(myLk).length;
@@ -140,7 +150,7 @@ function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
       const offsFromWkdy=Math.min(Math.max(0,targetOffs-offsFromWknd),freeWkdy.length);
       let wkdyOff=[];
       if(offsFromWkdy>0&&freeWkdy.length>0){
-        if(weeklyGroups(rotating,wIdx)[p.name]==="M"||weeklyGroups(rotating,wIdx)[p.name]==="N"){
+        if(wg[p.name]==="M"||wg[p.name]==="N"){
           const start=(freeWkdy.length-offsFromWkdy+(variation%2===0?0:Math.floor(freeWkdy.length/2)))%freeWkdy.length;
           wkdyOff=Array.from({length:offsFromWkdy},(_,k)=>freeWkdy[(start+k)%freeWkdy.length]);
         }else{
@@ -151,7 +161,51 @@ function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
       freeWkdy.filter(d=>!wkdyOff.includes(d)).forEach(d=>{sch[p.name][d]=wg[p.name];});
       wkdyOff.forEach(d=>{sch[p.name][d]="Week Off";});
     });
+
+    // ── POST-PASS: Guarantee 1 Morning on every weekday ──────────────────
+    // If a weekday has no Morning assigned (because the M-group person
+    // is on leave/WO/pinned), promote the first available A-shift person to M.
+    wkdys.forEach(d=>{
+      const ds=fmt(y,m,d);
+      // Skip if pinned coverage already handles this day
+      const hasMorning=rotating.some(p=>sch[p.name][d]==="M");
+      if(hasMorning) return;
+
+      // Find A-shift workers on this day who are NOT pinned
+      const aWorkers=rotating.filter(p=>
+        sch[p.name][d]==="A" &&
+        !pinned[p.name]?.[ds]  // not pinned — safe to reassign
+      );
+      if(!aWorkers.length) return; // everyone on leave/WO, can't help
+
+      // Prefer the person whose weekly-group is M (just happened to be off)
+      // otherwise pick by variation offset for fairness
+      const mGroupFree=aWorkers.filter(p=>wg[p.name]==="M");
+      const pool=mGroupFree.length?mGroupFree:aWorkers;
+      const pick=pool[variation%pool.length];
+      sch[pick.name][d]="M";
+    });
+
+    // ── POST-PASS: Guarantee 2 Night shifts on every weekday ─────────────
+    // If fewer than 2 N-shifts exist, promote A workers to N (avoid M↔N flip).
+    wkdys.forEach(d=>{
+      const ds=fmt(y,m,d);
+      const nightWorkers=rotating.filter(p=>sch[p.name][d]==="N");
+      if(nightWorkers.length>=2) return;
+      const needed=2-nightWorkers.length;
+      // Candidates: A workers, not pinned, not the person we just set to M
+      const aWorkers=rotating.filter(p=>
+        sch[p.name][d]==="A" &&
+        !pinned[p.name]?.[ds]
+      );
+      const nGroupFree=aWorkers.filter(p=>wg[p.name]==="N");
+      const pool=nGroupFree.length?nGroupFree:aWorkers;
+      for(let i=0;i<Math.min(needed,pool.length);i++){
+        sch[pool[(variation+i)%pool.length].name][d]="N";
+      }
+    });
   });
+
   return sch;
 }
 
