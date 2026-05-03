@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Roster Generator — Team India</title>
+<title>Roster Generator</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -21,10 +21,30 @@
 <script type="text/babel">
 const {useState,useMemo,useEffect}=React;
 
-const SHIFTS_IST={M:"5:30 AM to 1:30 PM",A:"1:30 PM to 9:30 PM",N:"9:30 PM to 5:30 AM",UK:"1:30 PM to 9:30 PM"};
-const SHIFTS_UK ={M:"12:00 AM to 8:00 AM",A:"8:00 AM to 4:00 PM",N:"4:00 PM to 12:00 AM",UK:"9:00 AM to 5:00 PM"};
-const COLORS={M:"#3b82f6",A:"#f59e0b",N:"#8b5cf6",UK:"#06b6d4","Week Off":"#6b7280","Planned Leave":"#10b981","Sick Leave":"#ef4444","Emergency Leave":"#f97316","Indian Holiday":"#ec4899"};
+// Default shift timings (can be overridden per team)
+const DEFAULT_SHIFTS={
+  M:{label:"Morning",  istStart:"05:30",istEnd:"13:30",ukStart:"00:00",ukEnd:"08:00",color:"#3b82f6"},
+  A:{label:"Afternoon",istStart:"13:30",istEnd:"21:30",ukStart:"08:00",ukEnd:"16:00",color:"#f59e0b"},
+  N:{label:"Night",    istStart:"21:30",istEnd:"05:30",ukStart:"16:00",ukEnd:"00:00",color:"#8b5cf6"},
+  UK:{label:"UK Fixed",istStart:"13:30",istEnd:"21:30",ukStart:"09:00",ukEnd:"17:00",color:"#06b6d4"},
+};
+const LEAVE_COLORS={"Week Off":"#6b7280","Planned Leave":"#10b981","Sick Leave":"#ef4444","Emergency Leave":"#f97316","Indian Holiday":"#ec4899"};
 const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function to12(t){
+  if(!t)return"";
+  const [h,m]=t.split(":").map(Number);
+  const ampm=h<12?"AM":"PM";
+  const h12=h%12||12;
+  return`${h12}:${String(m).padStart(2,"0")} ${ampm}`;
+}
+function shiftLabel(key,shifts,tz){
+  const s=shifts[key];
+  if(!s)return key;
+  const start=tz==="IST"?s.istStart:s.ukStart;
+  const end=tz==="IST"?s.istEnd:s.ukEnd;
+  return`${to12(start)} to ${to12(end)}`;
+}
 
 function dim(y,m){return new Date(y,m+1,0).getDate();}
 function dow(y,m,d){return new Date(y,m,d).getDay();}
@@ -120,7 +140,7 @@ function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
       const offsFromWkdy=Math.min(Math.max(0,targetOffs-offsFromWknd),freeWkdy.length);
       let wkdyOff=[];
       if(offsFromWkdy>0&&freeWkdy.length>0){
-        if(wg[p.name]==="M"||wg[p.name]==="N"){
+        if(weeklyGroups(rotating,wIdx)[p.name]==="M"||weeklyGroups(rotating,wIdx)[p.name]==="N"){
           const start=(freeWkdy.length-offsFromWkdy+(variation%2===0?0:Math.floor(freeWkdy.length/2)))%freeWkdy.length;
           wkdyOff=Array.from({length:offsFromWkdy},(_,k)=>freeWkdy[(start+k)%freeWkdy.length]);
         }else{
@@ -135,22 +155,92 @@ function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
   return sch;
 }
 
-function bgc(v){if(!v)return"#1f2937";if(COLORS[v])return COLORS[v];if(v.includes("Planned"))return COLORS["Planned Leave"];if(v.includes("Sick"))return COLORS["Sick Leave"];if(v.includes("Emergency"))return COLORS["Emergency Leave"];if(v.includes("Holiday"))return COLORS["Indian Holiday"];return"#374151";}
-function lbl(v){if(!v)return"";if(["M","A","N","UK"].includes(v))return v;return{"Week Off":"WO","Indian Holiday":"PH","Planned Leave":"PL","Sick Leave":"SL","Emergency Leave":"EL"}[v]||v.substring(0,3);}
-
-const STORAGE_KEY="roster-config-v1";
-
-function loadFromStorage(){
-  try{const raw=localStorage.getItem(STORAGE_KEY);return raw?JSON.parse(raw):null;}
-  catch(e){return null;}
+function bgc(v,shifts){
+  if(!v)return"#1f2937";
+  if(shifts&&shifts[v])return shifts[v].color;
+  if(LEAVE_COLORS[v])return LEAVE_COLORS[v];
+  if(v.includes("Planned"))return LEAVE_COLORS["Planned Leave"];
+  if(v.includes("Sick"))return LEAVE_COLORS["Sick Leave"];
+  if(v.includes("Emergency"))return LEAVE_COLORS["Emergency Leave"];
+  if(v.includes("Holiday"))return LEAVE_COLORS["Indian Holiday"];
+  return"#374151";
 }
-function saveToStorage(data){
-  try{localStorage.setItem(STORAGE_KEY,JSON.stringify(data));}catch(e){}
+function lbl(v){
+  if(!v)return"";
+  if(["M","A","N","UK"].includes(v))return v;
+  return{"Week Off":"WO","Indian Holiday":"PH","Planned Leave":"PL","Sick Leave":"SL","Emergency Leave":"EL"}[v]||v.substring(0,3);
 }
 
+const STORAGE_KEY="roster-config-v2";
+function loadStorage(){try{const r=localStorage.getItem(STORAGE_KEY);return r?JSON.parse(r):null;}catch(e){return null;}}
+function saveStorage(d){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(d));}catch(e){}}
+
+// ── Shift Settings Modal ────────────────────────────────────────────────────
+function ShiftSettingsModal({shifts,onSave,onClose}){
+  const [local,setLocal]=useState(JSON.parse(JSON.stringify(shifts)));
+  const keys=["M","A","N","UK"];
+  const update=(k,field,val)=>setLocal(s=>({...s,[k]:{...s[k],[field]:val}}));
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"#1f2937",borderRadius:12,padding:24,width:"100%",maxWidth:620,maxHeight:"90vh",overflowY:"auto",border:"1px solid #374151"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+          <h2 style={{color:"#60a5fa",fontSize:18,fontWeight:700}}>⚙️ Shift Timing Settings</h2>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#9ca3af",fontSize:22,cursor:"pointer",lineHeight:1}}>×</button>
+        </div>
+        <p style={{color:"#9ca3af",fontSize:12,marginBottom:16}}>Customize your team's shift timings. Changes apply to the legend and full shift labels. Times are in 24-hour format.</p>
+        {keys.map(k=>{
+          const s=local[k];
+          return(
+            <div key={k} style={{background:"#111827",borderRadius:8,padding:14,marginBottom:12,borderLeft:`4px solid ${s.color}`}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                <span style={{background:s.color,color:"#fff",borderRadius:4,padding:"2px 10px",fontWeight:700,fontSize:13}}>{k}</span>
+                <input value={s.label} onChange={e=>update(k,"label",e.target.value)}
+                  placeholder="Shift name" style={{background:"#374151",color:"#f9fafb",border:"1px solid #4b5563",borderRadius:6,padding:"5px 10px",fontSize:13,width:140}}/>
+                <input type="color" value={s.color} onChange={e=>update(k,"color",e.target.value)}
+                  style={{width:36,height:30,borderRadius:4,border:"none",cursor:"pointer",background:"none",padding:2}}/>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div>
+                  <div style={{fontSize:11,color:"#9ca3af",marginBottom:4}}>IST Start</div>
+                  <input type="time" value={s.istStart} onChange={e=>update(k,"istStart",e.target.value)}
+                    style={{background:"#374151",color:"#f9fafb",border:"1px solid #4b5563",borderRadius:6,padding:"6px 10px",fontSize:13,width:"100%"}}/>
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:"#9ca3af",marginBottom:4}}>IST End</div>
+                  <input type="time" value={s.istEnd} onChange={e=>update(k,"istEnd",e.target.value)}
+                    style={{background:"#374151",color:"#f9fafb",border:"1px solid #4b5563",borderRadius:6,padding:"6px 10px",fontSize:13,width:"100%"}}/>
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:"#9ca3af",marginBottom:4}}>UK Start</div>
+                  <input type="time" value={s.ukStart} onChange={e=>update(k,"ukStart",e.target.value)}
+                    style={{background:"#374151",color:"#f9fafb",border:"1px solid #4b5563",borderRadius:6,padding:"6px 10px",fontSize:13,width:"100%"}}/>
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:"#9ca3af",marginBottom:4}}>UK End</div>
+                  <input type="time" value={s.ukEnd} onChange={e=>update(k,"ukEnd",e.target.value)}
+                    style={{background:"#374151",color:"#f9fafb",border:"1px solid #4b5563",borderRadius:6,padding:"6px 10px",fontSize:13,width:"100%"}}/>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        <div style={{display:"flex",gap:10,marginTop:8,justifyContent:"flex-end"}}>
+          <button onClick={()=>{setLocal(JSON.parse(JSON.stringify(DEFAULT_SHIFTS)));}} style={{background:"#374151",color:"#9ca3af",border:"1px solid #4b5563",borderRadius:6,padding:"8px 18px",cursor:"pointer",fontSize:13}}>↺ Reset to Default</button>
+          <button onClick={onClose} style={{background:"#374151",color:"#9ca3af",border:"1px solid #4b5563",borderRadius:6,padding:"8px 18px",cursor:"pointer",fontSize:13}}>Cancel</button>
+          <button onClick={()=>onSave(local)} style={{background:"#3b82f6",color:"#fff",border:"none",borderRadius:6,padding:"8px 22px",cursor:"pointer",fontWeight:700,fontSize:13}}>Save Timings</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ────────────────────────────────────────────────────────────────
 function App(){
-  const saved=loadFromStorage();
+  const saved=loadStorage();
   const [tab,setTab]=useState("setup");
+  const [teamName,setTeamName]=useState(saved?.teamName||"Team India");
+  const [shifts,setShifts]=useState(saved?.shifts||JSON.parse(JSON.stringify(DEFAULT_SHIFTS)));
+  const [showShiftModal,setShowShiftModal]=useState(false);
   const [people,setPeople]=useState(saved?.people||[{name:"Hrudai"},{name:"Rishi"},{name:"Mihir"},{name:"Mayank"},{name:"Shraddha"},{name:"Faizan"},{name:"Shubham"},{name:"Gagan"}]);
   const [newName,setNewName]=useState("");const [newUK,setNewUK]=useState(false);
   const [year,setYear]=useState(saved?.year||2026);const [month,setMonth]=useState(saved?.month??4);
@@ -164,18 +254,16 @@ function App(){
   const [variation,setVariation]=useState(0);const [prevSch,setPrevSch]=useState(null);
   const [saveStatus,setSaveStatus]=useState("");
 
-  // Auto-save on config change
   useEffect(()=>{
     setSaveStatus("saving");
     const t=setTimeout(()=>{
-      saveToStorage({people,ukStaff,leaves,holidays,pinned,year,month});
-      setSaveStatus("saved");
-      setTimeout(()=>setSaveStatus(""),2000);
+      saveStorage({teamName,shifts,people,ukStaff,leaves,holidays,pinned,year,month});
+      setSaveStatus("saved");setTimeout(()=>setSaveStatus(""),2000);
     },600);
     return()=>clearTimeout(t);
-  },[people,ukStaff,leaves,holidays,pinned,year,month]);
+  },[teamName,shifts,people,ukStaff,leaves,holidays,pinned,year,month]);
 
-  const days=dim(year,month),sm=tz==="IST"?SHIFTS_IST:SHIFTS_UK;
+  const days=dim(year,month);
   const rotating=people.filter(p=>!ukStaff.includes(p.name));
   const badTransitions=useMemo(()=>sch?detectBadTransitions(sch,rotating,days):new Set(),[sch,rotating,days]);
   const diffCount=useMemo(()=>{
@@ -209,8 +297,8 @@ function App(){
   };
   const generate=()=>{
     try{
-      const newVar=variation+1;setVariation(newVar);setPrevSch(sch);
-      const s=autoAssign(people,year,month,leaves,holidays,ukStaff,pinned,newVar);
+      const nv=variation+1;setVariation(nv);setPrevSch(sch);
+      const s=autoAssign(people,year,month,leaves,holidays,ukStaff,pinned,nv);
       setSch(s);setTab("roster");setGenCount(c=>c+1);setGenError("");
     }catch(e){setGenError(String(e));}
   };
@@ -218,7 +306,7 @@ function App(){
     let nm=month+delta,ny=year;
     if(nm>11){nm=0;ny++;}else if(nm<0){nm=11;ny--;}
     setMonth(nm);setYear(ny);
-    try{const s=autoAssign(people,ny,nm,leaves,holidays,ukStaff,pinned,variation);setSch(s);}catch(e){}
+    try{setSch(autoAssign(people,ny,nm,leaves,holidays,ukStaff,pinned,variation));}catch(e){}
   };
   const handleCellEdit=(personName,day,value)=>{
     if(!value||value==="__keep__"){setEdit(null);return;}
@@ -239,28 +327,61 @@ function App(){
 
   return(
     <div style={{fontFamily:"Inter,sans-serif",background:"#111827",minHeight:"100vh",color:"#f9fafb"}}>
-      <div style={{background:"linear-gradient(135deg,#1e3a5f,#1a2744)",padding:"18px 24px",borderBottom:"1px solid #374151",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-        <div>
-          <h1 style={{margin:0,fontSize:20,fontWeight:700,color:"#60a5fa"}}>🗓️ Roster Generator — Team India</h1>
-          <p style={{margin:"3px 0 0",fontSize:12,color:"#9ca3af"}}>1M · 2N · rest A · Safe rotation · 5 work + 2 off/week · 📌 Pinned cells preserved</p>
+      {showShiftModal&&<ShiftSettingsModal shifts={shifts} onClose={()=>setShowShiftModal(false)} onSave={s=>{setShifts(s);setShowShiftModal(false);}}/>}
+
+      {/* Header */}
+      <div style={{background:"linear-gradient(135deg,#1e3a5f,#1a2744)",padding:"16px 24px",borderBottom:"1px solid #374151",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <span style={{fontSize:24}}>🗓️</span>
+          <div>
+            <input value={teamName} onChange={e=>setTeamName(e.target.value)}
+              style={{background:"transparent",border:"none",color:"#60a5fa",fontSize:20,fontWeight:700,width:"auto",minWidth:100,outline:"none",cursor:"text"}}
+              title="Click to rename your team"/>
+            <p style={{margin:"2px 0 0",fontSize:11,color:"#9ca3af"}}>1M · 2N · rest A · Safe rotation · 5 work+2 off/week · 📌 Pins preserved</p>
+          </div>
         </div>
-        <div style={{fontSize:12,fontWeight:600,color:saveStatus==="saved"?"#4ade80":saveStatus==="saving"?"#fbbf24":"transparent"}}>
-          {saveStatus==="saved"?"✅ Config saved":saveStatus==="saving"?"💾 Saving…":"✅ Config saved"}
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <button onClick={()=>setShowShiftModal(true)} style={{background:"#374151",color:"#e5e7eb",border:"1px solid #4b5563",borderRadius:8,padding:"7px 14px",cursor:"pointer",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>
+            ⏱️ Shift Timings
+          </button>
+          <div style={{fontSize:12,fontWeight:600,color:saveStatus==="saved"?"#4ade80":saveStatus==="saving"?"#fbbf24":"transparent"}}>
+            {saveStatus==="saved"?"✅ Saved":saveStatus==="saving"?"💾 Saving…":"✅ Saved"}
+          </div>
         </div>
       </div>
+
+      {/* Tabs */}
       <div style={{display:"flex",background:"#1f2937",borderBottom:"1px solid #374151"}}>
         {[["setup","⚙️ Setup"],["leaves","📋 Leaves & Holidays"],["roster","📅 Roster"]].map(([t,l])=>(
           <button key={t} onClick={()=>setTab(t)} style={{padding:"11px 18px",border:"none",cursor:"pointer",fontWeight:600,fontSize:13,background:tab===t?"#374151":"transparent",color:tab===t?"#60a5fa":"#9ca3af",borderBottom:tab===t?"2px solid #60a5fa":"2px solid transparent"}}>{l}</button>
         ))}
       </div>
+
       <div style={{padding:20}}>
 
+        {/* SETUP */}
         {tab==="setup"&&(
           <div style={{maxWidth:620}}>
             <h3 style={{color:"#e5e7eb",marginTop:0}}>Month & Year</h3>
             <div style={{display:"flex",gap:12,marginBottom:28}}>
               <select value={month} onChange={e=>setMonth(Number(e.target.value))} {...inp()}>{MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}</select>
               <input type="number" value={year} onChange={e=>setYear(Number(e.target.value))} min={2024} max={2030} {...inp({style:{width:90}})}/>
+            </div>
+            {/* Shift preview */}
+            <div style={{background:"#1f2937",borderRadius:10,padding:16,marginBottom:28,border:"1px solid #374151"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                <h4 style={{color:"#e5e7eb",fontWeight:600}}>Current Shift Timings</h4>
+                <button onClick={()=>setShowShiftModal(true)} style={{background:"#3b82f6",color:"#fff",border:"none",borderRadius:6,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:600}}>✏️ Edit</button>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                {["M","A","N","UK"].map(k=>(
+                  <div key={k} style={{background:"#111827",borderRadius:6,padding:"8px 12px",borderLeft:`3px solid ${shifts[k].color}`}}>
+                    <div style={{fontWeight:700,color:shifts[k].color,fontSize:12,marginBottom:3}}>{k} — {shifts[k].label}</div>
+                    <div style={{fontSize:11,color:"#9ca3af"}}>🇮🇳 IST: {to12(shifts[k].istStart)} – {to12(shifts[k].istEnd)}</div>
+                    <div style={{fontSize:11,color:"#9ca3af"}}>🇬🇧 UK: {to12(shifts[k].ukStart)} – {to12(shifts[k].ukEnd)}</div>
+                  </div>
+                ))}
+              </div>
             </div>
             <h3 style={{color:"#e5e7eb"}}>Team Members</h3>
             <p style={{color:"#9ca3af",fontSize:13,marginTop:-8}}>Toggle <span style={{color:"#06b6d4",fontWeight:700}}>UK</span> for Mon–Fri fixed staff.</p>
@@ -283,6 +404,7 @@ function App(){
           </div>
         )}
 
+        {/* LEAVES */}
         {tab==="leaves"&&(
           <div style={{maxWidth:760}}>
             <h3 style={{color:"#e5e7eb",marginTop:0}}>🏖️ Add Leaves</h3>
@@ -302,19 +424,19 @@ function App(){
             {leaves.length>0&&(
               <div style={{marginBottom:24}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                  <span style={{fontSize:12,color:"#9ca3af"}}>{leaves.length} leave entry/entries</span>
+                  <span style={{fontSize:12,color:"#9ca3af"}}>{leaves.length} entries</span>
                   <button type="button" onClick={()=>setLeaves([])} style={{background:"none",border:"1px solid #4b5563",borderRadius:4,color:"#9ca3af",fontSize:11,padding:"2px 8px",cursor:"pointer"}}>Clear all</button>
                 </div>
                 {leaves.map((l,i)=>(
                   <div key={i} style={{background:"#1f2937",borderRadius:6,padding:"7px 12px",marginBottom:5,display:"flex",justifyContent:"space-between",fontSize:13}}>
-                    <span>👤 <b>{l.person}</b> — {l.date} — <span style={{color:bgc(l.type)}}>{l.type}</span></span>
+                    <span>👤 <b>{l.person}</b> — {l.date} — <span style={{color:bgc(l.type,null)}}>{l.type}</span></span>
                     <span onClick={()=>setLeaves(leaves.filter((_,j)=>j!==i))} style={{cursor:"pointer",color:"#ef4444"}}>✕</span>
                   </div>
                 ))}
               </div>
             )}
             <h3 style={{color:"#e5e7eb",marginTop:24}}>🇮🇳 Public Holidays</h3>
-            <p style={{color:"#9ca3af",fontSize:12,marginTop:-8}}>Format: <b>YYYY-MM-DD</b> (e.g. 2026-05-01)</p>
+            <p style={{color:"#9ca3af",fontSize:12,marginTop:-8}}>Format: <b>YYYY-MM-DD</b></p>
             <div style={{display:"flex",gap:8,marginBottom:4,flexWrap:"wrap",alignItems:"center"}}>
               <input type="date" value={hDate} onChange={e=>{setHDate(e.target.value);setHError("");}} onKeyDown={e=>e.key==="Enter"&&addHoliday()} {...inp({style:{minWidth:160}})}/>
               <button type="button" onClick={addHoliday} style={{background:"#ec4899",color:"#fff",border:"none",borderRadius:6,padding:"8px 16px",cursor:"pointer",fontWeight:600}}>+ Add Holiday</button>
@@ -331,6 +453,7 @@ function App(){
           </div>
         )}
 
+        {/* ROSTER */}
         {tab==="roster"&&sch&&(
           <div>
             <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
@@ -346,28 +469,39 @@ function App(){
               {genError&&<span style={{color:"#ef4444",fontSize:11}}>⚠️ {genError}</span>}
               {prevSch&&genCount>0&&<span style={{fontSize:11,color:diffCount>0?"#4ade80":"#9ca3af",background:"#1f2937",borderRadius:4,padding:"3px 8px"}}>{diffCount>0?`✦ ${diffCount} cells changed`:"✓ No change"}</span>}
             </div>
+
+            {/* Legend with actual timings */}
             <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
-              {[["M",`Morning (${sm.M})`],["A",`Afternoon (${sm.A})`],["N",`Night (${sm.N})`],["UK",`UK Fixed (${sm.UK})`],["Week Off","WO"],["Planned Leave","PL"],["Sick Leave","SL"],["Indian Holiday","PH"]].map(([k,label])=>(
+              {["M","A","N","UK"].map(k=>(
                 <span key={k} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#9ca3af"}}>
-                  <span style={{width:12,height:12,borderRadius:3,background:bgc(k),display:"inline-block"}}></span>{label}
+                  <span style={{width:12,height:12,borderRadius:3,background:shifts[k].color,display:"inline-block"}}></span>
+                  {k} ({shiftLabel(k,shifts,tz)})
+                </span>
+              ))}
+              {[["Week Off","WO"],["Planned Leave","PL"],["Sick Leave","SL"],["Indian Holiday","PH"]].map(([k,l])=>(
+                <span key={k} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#9ca3af"}}>
+                  <span style={{width:12,height:12,borderRadius:3,background:bgc(k,null),display:"inline-block"}}></span>{l}
                 </span>
               ))}
               <span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#fbbf24"}}><span style={{width:12,height:12,borderRadius:3,background:"#78350f",border:"2px solid #f59e0b",display:"inline-block"}}></span>📌 Pinned</span>
               <span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#fb923c"}}><span style={{width:12,height:12,borderRadius:3,background:"#7c2d12",border:"2px solid #f97316",display:"inline-block"}}></span>⚠️ M↔N</span>
             </div>
+
             <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
               <div style={{background:"#2d2008",border:"1px solid #92400e",borderRadius:8,padding:"8px 14px",fontSize:12,color:"#fcd34d",display:"flex",alignItems:"center",gap:10}}>
                 <span>📌 <b>{pinnedCount}</b> cell{pinnedCount!==1?"s":""} pinned for {MONTHS[month]}</span>
-                {pinnedCount>0&&<button type="button" onClick={clearAllPins} style={{background:"#78350f",border:"none",borderRadius:4,color:"#fcd34d",fontSize:11,padding:"2px 8px",cursor:"pointer",fontWeight:600}}>Clear all pins</button>}
+                {pinnedCount>0&&<button type="button" onClick={clearAllPins} style={{background:"#78350f",border:"none",borderRadius:4,color:"#fcd34d",fontSize:11,padding:"2px 8px",cursor:"pointer",fontWeight:600}}>Clear all</button>}
               </div>
               {badTransitions.size>0
                 ?<div style={{background:"#2d1a0e",border:"1px solid #c2410c",borderRadius:8,padding:"8px 14px",fontSize:12,color:"#fb923c",flex:1,minWidth:160}}>⚠️ {badTransitions.size/2} M↔N transition(s)</div>
                 :<div style={{background:"#1a2f1a",border:"1px solid #166534",borderRadius:8,padding:"8px 14px",fontSize:12,color:"#86efac",flex:1,minWidth:160}}>✅ No M↔N transitions</div>
               }
             </div>
+
             <div style={{background:"#1e2535",border:"1px solid #334155",borderRadius:8,padding:"8px 14px",fontSize:11,color:"#94a3b8",marginBottom:12}}>
-              💡 Click any cell to pin it. Select <b>"🔓 Unpin"</b> to release.
+              💡 Click any cell to pin/change it. Select <b>"🔓 Unpin"</b> to release back to auto.
             </div>
+
             <div style={{overflowX:"auto"}}>
               <table style={{borderCollapse:"collapse",fontSize:11}}>
                 <thead>
@@ -408,7 +542,7 @@ function App(){
                                 <option disabled>──────</option>
                                 {opts.map(o=><option key={o} value={o}>{o}</option>)}
                               </select>
-                            :<span style={{display:"inline-block",background:bgc(val),color:"#fff",borderRadius:4,padding:"3px 4px",fontWeight:700,fontSize:10,minWidth:24,position:"relative"}}>
+                            :<span style={{display:"inline-block",background:bgc(val,shifts),color:"#fff",borderRadius:4,padding:"3px 4px",fontWeight:700,fontSize:10,minWidth:24,position:"relative"}}>
                                 {lbl(val)}
                                 {isPinned&&<span style={{position:"absolute",top:-5,right:-6,fontSize:8,lineHeight:1}}>📌</span>}
                                 {isBad&&!isPinned&&<span style={{position:"absolute",top:-5,right:-6,fontSize:8,lineHeight:1}}>⚠️</span>}
@@ -421,6 +555,7 @@ function App(){
                 </tbody>
               </table>
             </div>
+
             <div style={{marginTop:24}}>
               <h4 style={{color:"#e5e7eb"}}>📊 Monthly Summary</h4>
               <div style={{display:"flex",flexWrap:"wrap",gap:10}}>
@@ -428,9 +563,11 @@ function App(){
                   const s=sch[p.name]||{},isUK=ukStaff.includes(p.name);
                   const c={M:0,A:0,N:0,UK:0,WO:0,Leave:0,Holiday:0};
                   Object.values(s).forEach(v=>{if(v==="M")c.M++;else if(v==="A")c.A++;else if(v==="N")c.N++;else if(v==="UK")c.UK++;else if(v==="Week Off")c.WO++;else if(v==="Indian Holiday")c.Holiday++;else if(v?.includes("Leave"))c.Leave++;});
-                  const rows=isUK?[["UK Fixed",c.UK,"#06b6d4"],["Week Off",c.WO,"#6b7280"],["Leaves",c.Leave,"#10b981"],["Holidays",c.Holiday,"#ec4899"]]:[["Morning",c.M,"#3b82f6"],["Afternoon",c.A,"#f59e0b"],["Night",c.N,"#8b5cf6"],["Week Off",c.WO,"#6b7280"],["Leaves",c.Leave,"#10b981"],["Holidays",c.Holiday,"#ec4899"]];
+                  const rows=isUK
+                    ?[["UK Fixed",c.UK,shifts.UK.color],["Week Off",c.WO,"#6b7280"],["Leaves",c.Leave,"#10b981"],["Holidays",c.Holiday,"#ec4899"]]
+                    :[[shifts.M.label,c.M,shifts.M.color],[shifts.A.label,c.A,shifts.A.color],[shifts.N.label,c.N,shifts.N.color],["Week Off",c.WO,"#6b7280"],["Leaves",c.Leave,"#10b981"],["Holidays",c.Holiday,"#ec4899"]];
                   return <div key={p.name} style={{background:"#1f2937",borderRadius:8,padding:"10px 14px",minWidth:155}}>
-                    <div style={{fontWeight:700,color:isUK?"#06b6d4":"#60a5fa",marginBottom:6,fontSize:13}}>{p.name}{isUK&&" 🇬🇧"}</div>
+                    <div style={{fontWeight:700,color:isUK?shifts.UK.color:"#60a5fa",marginBottom:6,fontSize:13}}>{p.name}{isUK&&" 🇬🇧"}</div>
                     {rows.map(([l,n,col])=><div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#9ca3af",marginBottom:2}}><span>{l}</span><span style={{color:col,fontWeight:700}}>{n}</span></div>)}
                   </div>;
                 })}
