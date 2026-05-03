@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Roster Generator — Team India</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#111827;color:#f9fafb;font-family:Inter,sans-serif;}
+  select,input{outline:none;}
+  ::-webkit-scrollbar{height:6px;width:6px;}
+  ::-webkit-scrollbar-track{background:#1f2937;}
+  ::-webkit-scrollbar-thumb{background:#4b5563;border-radius:3px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useMemo,useEffect}=React;
+
+const SHIFTS_IST={M:"5:30 AM to 1:30 PM",A:"1:30 PM to 9:30 PM",N:"9:30 PM to 5:30 AM",UK:"1:30 PM to 9:30 PM"};
+const SHIFTS_UK ={M:"12:00 AM to 8:00 AM",A:"8:00 AM to 4:00 PM",N:"4:00 PM to 12:00 AM",UK:"9:00 AM to 5:00 PM"};
+const COLORS={M:"#3b82f6",A:"#f59e0b",N:"#8b5cf6",UK:"#06b6d4","Week Off":"#6b7280","Planned Leave":"#10b981","Sick Leave":"#ef4444","Emergency Leave":"#f97316","Indian Holiday":"#ec4899"};
+const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function dim(y,m){return new Date(y,m+1,0).getDate();}
+function dow(y,m,d){return new Date(y,m,d).getDay();}
+function isWknd(y,m,d){const w=dow(y,m,d);return w===0||w===6;}
+function dayName(y,m,d){return["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dow(y,m,d)];}
+function fmt(y,m,d){return`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;}
+
+function buildWeeks(y,m){
+  const total=dim(y,m);const weeks=[];let wk=[];
+  for(let d=1;d<=total;d++){
+    const dw=dow(y,m,d);
+    if(dw===1&&wk.length>0){weeks.push(wk);wk=[];}
+    wk.push(d);
+    if(dw===0){weeks.push(wk);wk=[];}
+  }
+  if(wk.length>0)weeks.push(wk);
+  return weeks;
+}
+function shiftByPos(pos,n){
+  if(n<=1)return"M";if(n===2)return pos===0?"M":"N";
+  if(n===3)return["M","A","N"][pos];
+  if(pos===0)return"M";if(pos===1)return"A";if(pos<=3)return"N";return"A";
+}
+function weeklyGroups(rotating,wIdx){
+  const n=rotating.length,r={};
+  rotating.forEach((p,i)=>{r[p.name]=shiftByPos((i+wIdx)%n,n);});
+  return r;
+}
+function detectBadTransitions(sch,rotating,totalDays){
+  const bad=new Set();
+  rotating.forEach(p=>{
+    for(let d=1;d<totalDays;d++){
+      const a=sch[p.name]?.[d],b=sch[p.name]?.[d+1];
+      if((a==="M"&&b==="N")||(a==="N"&&b==="M")){bad.add(`${p.name}|${d}`);bad.add(`${p.name}|${d+1}`);}
+    }
+  });
+  return bad;
+}
+function autoAssign(people,y,m,leaves,holidays,ukList,pinned={},variation=0){
+  const total=dim(y,m),sch={};
+  const rotating=people.filter(p=>!ukList.includes(p.name));
+  people.forEach(p=>{sch[p.name]={};});
+  people.filter(p=>ukList.includes(p.name)).forEach(p=>{
+    for(let d=1;d<=total;d++){
+      const ds=fmt(y,m,d),lv=leaves.find(l=>l.person===p.name&&l.date===ds);
+      const pv=pinned[p.name]?.[ds];
+      sch[p.name][d]=pv!==undefined?pv:isWknd(y,m,d)?"Week Off":holidays.includes(ds)?"Indian Holiday":lv?lv.type:"UK";
+    }
+  });
+  buildWeeks(y,m).forEach((wDays,wIdx)=>{
+    const sat=wDays.find(d=>dow(y,m,d)===6),sun=wDays.find(d=>dow(y,m,d)===0);
+    const wknd=[sat,sun].filter(Boolean),wkdys=wDays.filter(d=>!wknd.includes(d));
+    const lk={};
+    rotating.forEach(p=>{
+      lk[p.name]={};
+      wDays.forEach(d=>{
+        const ds=fmt(y,m,d),lv=leaves.find(l=>l.person===p.name&&l.date===ds);
+        const pv=pinned[p.name]?.[ds];
+        if(pv!==undefined){lk[p.name][d]=pv;sch[p.name][d]=pv;}
+        else if(holidays.includes(ds)){lk[p.name][d]="Indian Holiday";sch[p.name][d]="Indian Holiday";}
+        else if(lv){lk[p.name][d]=lv.type;sch[p.name][d]=lv.type;}
+      });
+    });
+    const wg=weeklyGroups(rotating,wIdx);
+    const wkndAsgn={};
+    wknd.forEach(d=>{
+      const coveredShifts=new Set();
+      rotating.forEach(p=>{
+        const pv=pinned[p.name]?.[fmt(y,m,d)];
+        if(pv&&["M","A","N"].includes(pv)){if(!wkndAsgn[p.name])wkndAsgn[p.name]={};wkndAsgn[p.name][d]=pv;coveredShifts.add(pv);}
+      });
+      const taken=new Set(Object.entries(wkndAsgn).filter(([,v])=>v[d]!==undefined).map(([k])=>k));
+      const avail=rotating.map(p=>p.name).filter(nm=>!lk[nm][d]&&!taken.has(nm));
+      ["M","N","A"].forEach(cov=>{
+        if(coveredShifts.has(cov))return;
+        let cands=avail.filter(nm=>wg[nm]===cov&&!taken.has(nm));
+        if(!cands.length)cands=avail.filter(nm=>wg[nm]==="A"&&!taken.has(nm));
+        if(!cands.length)cands=avail.filter(nm=>!taken.has(nm));
+        if(cands.length){const pick=cands[(wIdx+variation)%cands.length];if(!wkndAsgn[pick])wkndAsgn[pick]={};wkndAsgn[pick][d]=cov;taken.add(pick);}
+      });
+    });
+    rotating.forEach(p=>{
+      const pi=rotating.findIndex(r=>r.name===p.name),myLk=lk[p.name];
+      const freeDays=wDays.length-Object.keys(myLk).length;
+      const isFullWk=wDays.length===7;
+      const targetOffs=isFullWk?Math.min(2,freeDays):Math.max(0,freeDays-5);
+      const myWkWork=wknd.filter(d=>!myLk[d]&&wkndAsgn[p.name]?.[d]);
+      const myWkOff=wknd.filter(d=>!myLk[d]&&!wkndAsgn[p.name]?.[d]);
+      const freeWkdy=wkdys.filter(d=>!myLk[d]);
+      myWkWork.forEach(d=>{sch[p.name][d]=wkndAsgn[p.name][d];});
+      myWkOff.forEach(d=>{sch[p.name][d]="Week Off";});
+      const offsFromWknd=myWkOff.length;
+      const offsFromWkdy=Math.min(Math.max(0,targetOffs-offsFromWknd),freeWkdy.length);
+      let wkdyOff=[];
+      if(offsFromWkdy>0&&freeWkdy.length>0){
+        if(wg[p.name]==="M"||wg[p.name]==="N"){
+          const start=(freeWkdy.length-offsFromWkdy+(variation%2===0?0:Math.floor(freeWkdy.length/2)))%freeWkdy.length;
+          wkdyOff=Array.from({length:offsFromWkdy},(_,k)=>freeWkdy[(start+k)%freeWkdy.length]);
+        }else{
+          const base=(pi+wIdx*2+variation)%freeWkdy.length,b2=(base+Math.ceil(freeWkdy.length/2))%freeWkdy.length;
+          wkdyOff=offsFromWkdy===1?[freeWkdy[base]]:[freeWkdy[base],freeWkdy[base!==b2?b2:(base+1)%freeWkdy.length]];
+        }
+      }
+      freeWkdy.filter(d=>!wkdyOff.includes(d)).forEach(d=>{sch[p.name][d]=wg[p.name];});
+      wkdyOff.forEach(d=>{sch[p.name][d]="Week Off";});
+    });
+  });
+  return sch;
+}
+
+function bgc(v){if(!v)return"#1f2937";if(COLORS[v])return COLORS[v];if(v.includes("Planned"))return COLORS["Planned Leave"];if(v.includes("Sick"))return COLORS["Sick Leave"];if(v.includes("Emergency"))return COLORS["Emergency Leave"];if(v.includes("Holiday"))return COLORS["Indian Holiday"];return"#374151";}
+function lbl(v){if(!v)return"";if(["M","A","N","UK"].includes(v))return v;return{"Week Off":"WO","Indian Holiday":"PH","Planned Leave":"PL","Sick Leave":"SL","Emergency Leave":"EL"}[v]||v.substring(0,3);}
+
+const STORAGE_KEY="roster-config-v1";
+
+function loadFromStorage(){
+  try{const raw=localStorage.getItem(STORAGE_KEY);return raw?JSON.parse(raw):null;}
+  catch(e){return null;}
+}
+function saveToStorage(data){
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify(data));}catch(e){}
+}
+
+function App(){
+  const saved=loadFromStorage();
+  const [tab,setTab]=useState("setup");
+  const [people,setPeople]=useState(saved?.people||[{name:"Hrudai"},{name:"Rishi"},{name:"Mihir"},{name:"Mayank"},{name:"Shraddha"},{name:"Faizan"},{name:"Shubham"},{name:"Gagan"}]);
+  const [newName,setNewName]=useState("");const [newUK,setNewUK]=useState(false);
+  const [year,setYear]=useState(saved?.year||2026);const [month,setMonth]=useState(saved?.month??4);
+  const [leaves,setLeaves]=useState(saved?.leaves||[]);const [holidays,setHolidays]=useState(saved?.holidays||[]);
+  const [lf,setLf]=useState({person:"",dateFrom:"",dateTo:"",type:"Planned Leave"});
+  const [hDate,setHDate]=useState("");const [hError,setHError]=useState("");
+  const [sch,setSch]=useState(null);const [tz,setTz]=useState("IST");const [edit,setEdit]=useState(null);
+  const [ukStaff,setUkStaff]=useState(saved?.ukStaff||["Mihir","Gagan"]);
+  const [pinned,setPinned]=useState(saved?.pinned||{});
+  const [genError,setGenError]=useState("");const [genCount,setGenCount]=useState(0);
+  const [variation,setVariation]=useState(0);const [prevSch,setPrevSch]=useState(null);
+  const [saveStatus,setSaveStatus]=useState("");
+
+  // Auto-save on config change
+  useEffect(()=>{
+    setSaveStatus("saving");
+    const t=setTimeout(()=>{
+      saveToStorage({people,ukStaff,leaves,holidays,pinned,year,month});
+      setSaveStatus("saved");
+      setTimeout(()=>setSaveStatus(""),2000);
+    },600);
+    return()=>clearTimeout(t);
+  },[people,ukStaff,leaves,holidays,pinned,year,month]);
+
+  const days=dim(year,month),sm=tz==="IST"?SHIFTS_IST:SHIFTS_UK;
+  const rotating=people.filter(p=>!ukStaff.includes(p.name));
+  const badTransitions=useMemo(()=>sch?detectBadTransitions(sch,rotating,days):new Set(),[sch,rotating,days]);
+  const diffCount=useMemo(()=>{
+    if(!prevSch||!sch)return 0;
+    let n=0;people.forEach(p=>{for(let d=1;d<=days;d++){if(prevSch[p.name]?.[d]!==sch[p.name]?.[d])n++;}});
+    return n;
+  },[prevSch,sch,people,days]);
+  const pinnedCount=useMemo(()=>{
+    let cnt=0;
+    Object.values(pinned).forEach(ds=>{Object.keys(ds).forEach(d=>{const[y2,m2]=d.split("-").map(Number);if(y2===year&&m2===month+1)cnt++;});});
+    return cnt;
+  },[pinned,year,month]);
+
+  const addPerson=()=>{const n=newName.trim();if(n&&!people.find(p=>p.name===n)){setPeople([...people,{name:n}]);if(newUK)setUkStaff(u=>[...u,n]);setNewName("");setNewUK(false);}};
+  const toggleUK=n=>setUkStaff(u=>u.includes(n)?u.filter(x=>x!==n):[...u,n]);
+  const addLeave=()=>{
+    if(!lf.person||!lf.dateFrom)return;
+    const from=new Date(lf.dateFrom),to=new Date(lf.dateTo||lf.dateFrom),entries=[];
+    for(let dt=new Date(from);dt<=to;dt.setDate(dt.getDate()+1)){
+      const ds=dt.toISOString().split("T")[0],dw=dt.getDay();
+      if(ukStaff.includes(lf.person)&&(dw===0||dw===6))continue;
+      if(!leaves.find(l=>l.person===lf.person&&l.date===ds))entries.push({person:lf.person,date:ds,type:lf.type});
+    }
+    setLeaves([...leaves,...entries]);setLf({person:lf.person,dateFrom:"",dateTo:"",type:lf.type});
+  };
+  const addHoliday=()=>{
+    const t=hDate?.trim();
+    if(!t){setHError("Please select a date.");return;}
+    if(holidays.includes(t)){setHError("Already added.");return;}
+    setHolidays([...holidays,t]);setHDate("");setHError("");
+  };
+  const generate=()=>{
+    try{
+      const newVar=variation+1;setVariation(newVar);setPrevSch(sch);
+      const s=autoAssign(people,year,month,leaves,holidays,ukStaff,pinned,newVar);
+      setSch(s);setTab("roster");setGenCount(c=>c+1);setGenError("");
+    }catch(e){setGenError(String(e));}
+  };
+  const goMonth=(delta)=>{
+    let nm=month+delta,ny=year;
+    if(nm>11){nm=0;ny++;}else if(nm<0){nm=11;ny--;}
+    setMonth(nm);setYear(ny);
+    try{const s=autoAssign(people,ny,nm,leaves,holidays,ukStaff,pinned,variation);setSch(s);}catch(e){}
+  };
+  const handleCellEdit=(personName,day,value)=>{
+    if(!value||value==="__keep__"){setEdit(null);return;}
+    const ds=fmt(year,month,day);
+    if(value==="__unpin__"){
+      const np={...pinned};
+      if(np[personName]){const d2={...np[personName]};delete d2[ds];if(Object.keys(d2).length===0)delete np[personName];else np[personName]=d2;}
+      setPinned(np);setSch(autoAssign(people,year,month,leaves,holidays,ukStaff,np,variation));
+    }else{
+      const np={...pinned,[personName]:{...(pinned[personName]||{}),[ds]:value}};
+      setPinned(np);setSch(s=>({...s,[personName]:{...s[personName],[day]:value}}));
+    }
+    setEdit(null);
+  };
+  const clearAllPins=()=>{setPinned({});setSch(autoAssign(people,year,month,leaves,holidays,ukStaff,{},variation));};
+  const opts=["M","A","N","UK","Week Off","Planned Leave","Sick Leave","Emergency Leave","Indian Holiday"];
+  const inp=(ex={})=>({style:{background:"#374151",color:"#f9fafb",border:"1px solid #4b5563",borderRadius:6,padding:"8px 12px",fontSize:14,...(ex.style||{})}});
+
+  return(
+    <div style={{fontFamily:"Inter,sans-serif",background:"#111827",minHeight:"100vh",color:"#f9fafb"}}>
+      <div style={{background:"linear-gradient(135deg,#1e3a5f,#1a2744)",padding:"18px 24px",borderBottom:"1px solid #374151",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <div>
+          <h1 style={{margin:0,fontSize:20,fontWeight:700,color:"#60a5fa"}}>🗓️ Roster Generator — Team India</h1>
+          <p style={{margin:"3px 0 0",fontSize:12,color:"#9ca3af"}}>1M · 2N · rest A · Safe rotation · 5 work + 2 off/week · 📌 Pinned cells preserved</p>
+        </div>
+        <div style={{fontSize:12,fontWeight:600,color:saveStatus==="saved"?"#4ade80":saveStatus==="saving"?"#fbbf24":"transparent"}}>
+          {saveStatus==="saved"?"✅ Config saved":saveStatus==="saving"?"💾 Saving…":"✅ Config saved"}
+        </div>
+      </div>
+      <div style={{display:"flex",background:"#1f2937",borderBottom:"1px solid #374151"}}>
+        {[["setup","⚙️ Setup"],["leaves","📋 Leaves & Holidays"],["roster","📅 Roster"]].map(([t,l])=>(
+          <button key={t} onClick={()=>setTab(t)} style={{padding:"11px 18px",border:"none",cursor:"pointer",fontWeight:600,fontSize:13,background:tab===t?"#374151":"transparent",color:tab===t?"#60a5fa":"#9ca3af",borderBottom:tab===t?"2px solid #60a5fa":"2px solid transparent"}}>{l}</button>
+        ))}
+      </div>
+      <div style={{padding:20}}>
+
+        {tab==="setup"&&(
+          <div style={{maxWidth:620}}>
+            <h3 style={{color:"#e5e7eb",marginTop:0}}>Month & Year</h3>
+            <div style={{display:"flex",gap:12,marginBottom:28}}>
+              <select value={month} onChange={e=>setMonth(Number(e.target.value))} {...inp()}>{MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}</select>
+              <input type="number" value={year} onChange={e=>setYear(Number(e.target.value))} min={2024} max={2030} {...inp({style:{width:90}})}/>
+            </div>
+            <h3 style={{color:"#e5e7eb"}}>Team Members</h3>
+            <p style={{color:"#9ca3af",fontSize:13,marginTop:-8}}>Toggle <span style={{color:"#06b6d4",fontWeight:700}}>UK</span> for Mon–Fri fixed staff.</p>
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+              {people.map(p=>{
+                const isUK=ukStaff.includes(p.name);
+                return <div key={p.name} style={{display:"flex",alignItems:"center",gap:10,background:"#1f2937",borderRadius:8,padding:"8px 14px"}}>
+                  <span style={{flex:1,fontWeight:600,fontSize:14}}>👤 {p.name}</span>
+                  <button onClick={()=>toggleUK(p.name)} style={{padding:"4px 12px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,background:isUK?"#06b6d4":"#374151",color:isUK?"#fff":"#9ca3af"}}>{isUK?"🇬🇧 UK Only":"🔄 Rotating"}</button>
+                  <button onClick={()=>{setPeople(people.filter(pp=>pp.name!==p.name));setUkStaff(u=>u.filter(n=>n!==p.name));}} style={{background:"none",border:"none",color:"#ef4444",cursor:"pointer",fontSize:18}}>×</button>
+                </div>;
+              })}
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <input value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addPerson()} placeholder="New person name..." {...inp({style:{flex:1}})}/>
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,color:"#9ca3af",cursor:"pointer"}}><input type="checkbox" checked={newUK} onChange={e=>setNewUK(e.target.checked)}/> UK Only</label>
+              <button onClick={addPerson} style={{background:"#3b82f6",color:"#fff",border:"none",borderRadius:6,padding:"8px 16px",cursor:"pointer",fontWeight:600}}>+ Add</button>
+            </div>
+            <button onClick={()=>setTab("leaves")} style={{marginTop:32,background:"#3b82f6",color:"#fff",border:"none",borderRadius:8,padding:"12px 28px",cursor:"pointer",fontWeight:700,fontSize:15}}>Next: Leaves & Holidays →</button>
+          </div>
+        )}
+
+        {tab==="leaves"&&(
+          <div style={{maxWidth:760}}>
+            <h3 style={{color:"#e5e7eb",marginTop:0}}>🏖️ Add Leaves</h3>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end",marginBottom:14}}>
+              {[
+                ["Person",<select value={lf.person} onChange={e=>setLf({...lf,person:e.target.value})} {...inp()}><option value="">Select person</option>{people.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select>],
+                ["From",<input type="date" value={lf.dateFrom} onChange={e=>setLf({...lf,dateFrom:e.target.value,dateTo:lf.dateTo<e.target.value?e.target.value:lf.dateTo})} {...inp()}/>],
+                ["To (optional)",<input type="date" value={lf.dateTo} min={lf.dateFrom} onChange={e=>setLf({...lf,dateTo:e.target.value})} {...inp()}/>],
+                ["Type",<select value={lf.type} onChange={e=>setLf({...lf,type:e.target.value})} {...inp()}><option>Planned Leave</option><option>Sick Leave</option><option>Emergency Leave</option></select>],
+              ].map(([label,el])=>(
+                <div key={label} style={{display:"flex",flexDirection:"column",gap:4}}>
+                  <label style={{fontSize:11,color:"#9ca3af"}}>{label}</label>{el}
+                </div>
+              ))}
+              <button type="button" onClick={addLeave} style={{background:"#10b981",color:"#fff",border:"none",borderRadius:6,padding:"8px 16px",cursor:"pointer",fontWeight:600,height:38,alignSelf:"flex-end"}}>+ Add</button>
+            </div>
+            {leaves.length>0&&(
+              <div style={{marginBottom:24}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <span style={{fontSize:12,color:"#9ca3af"}}>{leaves.length} leave entry/entries</span>
+                  <button type="button" onClick={()=>setLeaves([])} style={{background:"none",border:"1px solid #4b5563",borderRadius:4,color:"#9ca3af",fontSize:11,padding:"2px 8px",cursor:"pointer"}}>Clear all</button>
+                </div>
+                {leaves.map((l,i)=>(
+                  <div key={i} style={{background:"#1f2937",borderRadius:6,padding:"7px 12px",marginBottom:5,display:"flex",justifyContent:"space-between",fontSize:13}}>
+                    <span>👤 <b>{l.person}</b> — {l.date} — <span style={{color:bgc(l.type)}}>{l.type}</span></span>
+                    <span onClick={()=>setLeaves(leaves.filter((_,j)=>j!==i))} style={{cursor:"pointer",color:"#ef4444"}}>✕</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <h3 style={{color:"#e5e7eb",marginTop:24}}>🇮🇳 Public Holidays</h3>
+            <p style={{color:"#9ca3af",fontSize:12,marginTop:-8}}>Format: <b>YYYY-MM-DD</b> (e.g. 2026-05-01)</p>
+            <div style={{display:"flex",gap:8,marginBottom:4,flexWrap:"wrap",alignItems:"center"}}>
+              <input type="date" value={hDate} onChange={e=>{setHDate(e.target.value);setHError("");}} onKeyDown={e=>e.key==="Enter"&&addHoliday()} {...inp({style:{minWidth:160}})}/>
+              <button type="button" onClick={addHoliday} style={{background:"#ec4899",color:"#fff",border:"none",borderRadius:6,padding:"8px 16px",cursor:"pointer",fontWeight:600}}>+ Add Holiday</button>
+            </div>
+            {hError&&<p style={{color:"#f87171",fontSize:12,margin:"0 0 8px"}}>{hError}</p>}
+            <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:8}}>
+              {holidays.map((h,i)=>(
+                <span key={i} style={{background:"#374151",borderRadius:20,padding:"6px 14px",fontSize:13,display:"flex",alignItems:"center",gap:8}}>
+                  🎉 {h}<span onClick={()=>setHolidays(holidays.filter((_,j)=>j!==i))} style={{cursor:"pointer",color:"#ef4444"}}>×</span>
+                </span>
+              ))}
+            </div>
+            <button type="button" onClick={generate} style={{marginTop:32,background:"linear-gradient(135deg,#3b82f6,#8b5cf6)",color:"#fff",border:"none",borderRadius:8,padding:"12px 28px",cursor:"pointer",fontWeight:700,fontSize:15}}>🚀 Generate Roster</button>
+          </div>
+        )}
+
+        {tab==="roster"&&sch&&(
+          <div>
+            <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
+              <button type="button" onClick={()=>goMonth(-1)} style={{background:"#374151",color:"#e5e7eb",border:"1px solid #4b5563",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontWeight:600,fontSize:13}}>← Prev</button>
+              <h3 style={{margin:0,color:"#e5e7eb",minWidth:140,textAlign:"center"}}>{MONTHS[month]} {year}</h3>
+              <button type="button" onClick={()=>goMonth(1)} style={{background:"#374151",color:"#e5e7eb",border:"1px solid #4b5563",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontWeight:600,fontSize:13}}>Next →</button>
+              <div style={{display:"flex",gap:6}}>
+                {["IST","UK"].map(z=><button key={z} type="button" onClick={()=>setTz(z)} style={{padding:"5px 14px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:600,fontSize:13,background:tz===z?"#3b82f6":"#374151",color:"#fff"}}>{z}</button>)}
+              </div>
+              <button type="button" onClick={generate} style={{background:"#2d4a2d",color:"#86efac",border:"1px solid #16a34a",borderRadius:6,padding:"5px 14px",cursor:"pointer",fontSize:12,fontWeight:700}}>
+                🔄 Regenerate{genCount>0?` (#${genCount})`:""}
+              </button>
+              {genError&&<span style={{color:"#ef4444",fontSize:11}}>⚠️ {genError}</span>}
+              {prevSch&&genCount>0&&<span style={{fontSize:11,color:diffCount>0?"#4ade80":"#9ca3af",background:"#1f2937",borderRadius:4,padding:"3px 8px"}}>{diffCount>0?`✦ ${diffCount} cells changed`:"✓ No change"}</span>}
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+              {[["M",`Morning (${sm.M})`],["A",`Afternoon (${sm.A})`],["N",`Night (${sm.N})`],["UK",`UK Fixed (${sm.UK})`],["Week Off","WO"],["Planned Leave","PL"],["Sick Leave","SL"],["Indian Holiday","PH"]].map(([k,label])=>(
+                <span key={k} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#9ca3af"}}>
+                  <span style={{width:12,height:12,borderRadius:3,background:bgc(k),display:"inline-block"}}></span>{label}
+                </span>
+              ))}
+              <span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#fbbf24"}}><span style={{width:12,height:12,borderRadius:3,background:"#78350f",border:"2px solid #f59e0b",display:"inline-block"}}></span>📌 Pinned</span>
+              <span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#fb923c"}}><span style={{width:12,height:12,borderRadius:3,background:"#7c2d12",border:"2px solid #f97316",display:"inline-block"}}></span>⚠️ M↔N</span>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
+              <div style={{background:"#2d2008",border:"1px solid #92400e",borderRadius:8,padding:"8px 14px",fontSize:12,color:"#fcd34d",display:"flex",alignItems:"center",gap:10}}>
+                <span>📌 <b>{pinnedCount}</b> cell{pinnedCount!==1?"s":""} pinned for {MONTHS[month]}</span>
+                {pinnedCount>0&&<button type="button" onClick={clearAllPins} style={{background:"#78350f",border:"none",borderRadius:4,color:"#fcd34d",fontSize:11,padding:"2px 8px",cursor:"pointer",fontWeight:600}}>Clear all pins</button>}
+              </div>
+              {badTransitions.size>0
+                ?<div style={{background:"#2d1a0e",border:"1px solid #c2410c",borderRadius:8,padding:"8px 14px",fontSize:12,color:"#fb923c",flex:1,minWidth:160}}>⚠️ {badTransitions.size/2} M↔N transition(s)</div>
+                :<div style={{background:"#1a2f1a",border:"1px solid #166534",borderRadius:8,padding:"8px 14px",fontSize:12,color:"#86efac",flex:1,minWidth:160}}>✅ No M↔N transitions</div>
+              }
+            </div>
+            <div style={{background:"#1e2535",border:"1px solid #334155",borderRadius:8,padding:"8px 14px",fontSize:11,color:"#94a3b8",marginBottom:12}}>
+              💡 Click any cell to pin it. Select <b>"🔓 Unpin"</b> to release.
+            </div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{borderCollapse:"collapse",fontSize:11}}>
+                <thead>
+                  <tr>
+                    <th style={{background:"#1f2937",color:"#9ca3af",padding:"8px 12px",textAlign:"left",position:"sticky",left:0,zIndex:2,minWidth:95,borderRight:"2px solid #374151"}}>Person</th>
+                    {Array.from({length:days},(_,i)=>{
+                      const d=i+1,dn=dayName(year,month,d),wk=isWknd(year,month,d);
+                      return <th key={d} style={{background:wk?"#1a2233":"#1f2937",color:wk?"#818cf8":"#9ca3af",padding:"5px 3px",textAlign:"center",minWidth:34,borderLeft:"1px solid #374151"}}>
+                        <div style={{fontWeight:700}}>{d}</div><div style={{fontSize:9}}>{dn}</div>
+                      </th>;
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {people.map((p,pi)=>{
+                    const isUK=ukStaff.includes(p.name);
+                    return <tr key={p.name} style={{background:pi%2===0?"#111827":"#161f2e"}}>
+                      <td style={{padding:"7px 12px",fontWeight:600,fontSize:12,color:"#e5e7eb",position:"sticky",left:0,background:pi%2===0?"#111827":"#161f2e",zIndex:1,borderRight:"2px solid #374151",whiteSpace:"nowrap"}}>
+                        {p.name}{isUK&&<span style={{marginLeft:5,fontSize:10,color:"#06b6d4",background:"#0c3046",borderRadius:4,padding:"1px 5px"}}>UK</span>}
+                      </td>
+                      {Array.from({length:days},(_,i)=>{
+                        const d=i+1,ds=fmt(year,month,d),val=sch[p.name]?.[d]||"";
+                        const wk=isWknd(year,month,d),isEd=edit?.person===p.name&&edit?.day===d;
+                        const isBad=badTransitions.has(`${p.name}|${d}`);
+                        const isPinned=pinned[p.name]?.[ds]!==undefined;
+                        const isChanged=prevSch&&prevSch[p.name]?.[d]!==val&&!isPinned;
+                        return <td key={d} onClick={()=>setEdit({person:p.name,day:d})}
+                          style={{textAlign:"center",padding:"3px 2px",borderLeft:"1px solid #374151",cursor:"pointer",
+                            background:isBad?"rgba(249,115,22,0.12)":isPinned?"rgba(245,158,11,0.1)":isChanged?"rgba(74,222,128,0.1)":wk?"rgba(99,102,241,0.05)":"transparent",
+                            outline:isBad?"1px solid #f97316":isPinned?"1px solid #b45309":isChanged?"1px solid #16a34a":undefined}}>
+                          {isEd
+                            ?<select autoFocus defaultValue="__keep__"
+                                onChange={e=>{if(e.target.value!=="__keep__")handleCellEdit(p.name,d,e.target.value);}}
+                                onBlur={()=>setEdit(null)}
+                                style={{fontSize:10,background:"#1f2937",color:"#fff",border:"1px solid #4b5563",borderRadius:3,width:80}}>
+                                <option value="__keep__">— keep —</option>
+                                {isPinned&&<option value="__unpin__">🔓 Unpin</option>}
+                                <option disabled>──────</option>
+                                {opts.map(o=><option key={o} value={o}>{o}</option>)}
+                              </select>
+                            :<span style={{display:"inline-block",background:bgc(val),color:"#fff",borderRadius:4,padding:"3px 4px",fontWeight:700,fontSize:10,minWidth:24,position:"relative"}}>
+                                {lbl(val)}
+                                {isPinned&&<span style={{position:"absolute",top:-5,right:-6,fontSize:8,lineHeight:1}}>📌</span>}
+                                {isBad&&!isPinned&&<span style={{position:"absolute",top:-5,right:-6,fontSize:8,lineHeight:1}}>⚠️</span>}
+                              </span>
+                          }
+                        </td>;
+                      })}
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{marginTop:24}}>
+              <h4 style={{color:"#e5e7eb"}}>📊 Monthly Summary</h4>
+              <div style={{display:"flex",flexWrap:"wrap",gap:10}}>
+                {people.map(p=>{
+                  const s=sch[p.name]||{},isUK=ukStaff.includes(p.name);
+                  const c={M:0,A:0,N:0,UK:0,WO:0,Leave:0,Holiday:0};
+                  Object.values(s).forEach(v=>{if(v==="M")c.M++;else if(v==="A")c.A++;else if(v==="N")c.N++;else if(v==="UK")c.UK++;else if(v==="Week Off")c.WO++;else if(v==="Indian Holiday")c.Holiday++;else if(v?.includes("Leave"))c.Leave++;});
+                  const rows=isUK?[["UK Fixed",c.UK,"#06b6d4"],["Week Off",c.WO,"#6b7280"],["Leaves",c.Leave,"#10b981"],["Holidays",c.Holiday,"#ec4899"]]:[["Morning",c.M,"#3b82f6"],["Afternoon",c.A,"#f59e0b"],["Night",c.N,"#8b5cf6"],["Week Off",c.WO,"#6b7280"],["Leaves",c.Leave,"#10b981"],["Holidays",c.Holiday,"#ec4899"]];
+                  return <div key={p.name} style={{background:"#1f2937",borderRadius:8,padding:"10px 14px",minWidth:155}}>
+                    <div style={{fontWeight:700,color:isUK?"#06b6d4":"#60a5fa",marginBottom:6,fontSize:13}}>{p.name}{isUK&&" 🇬🇧"}</div>
+                    {rows.map(([l,n,col])=><div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#9ca3af",marginBottom:2}}><span>{l}</span><span style={{color:col,fontWeight:700}}>{n}</span></div>)}
+                  </div>;
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab==="roster"&&!sch&&(
+          <div style={{textAlign:"center",padding:60,color:"#6b7280"}}>
+            <div style={{fontSize:48,marginBottom:12}}>📅</div>
+            <p>Configure your team, then generate the roster.</p>
+            <button type="button" onClick={generate} style={{background:"#3b82f6",color:"#fff",border:"none",borderRadius:8,padding:"10px 24px",cursor:"pointer",fontWeight:600}}>🚀 Generate Roster</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
